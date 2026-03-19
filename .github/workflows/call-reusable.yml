@@ -1,0 +1,29 @@
+# ─── Caller workflow ────────────────────────────────────────────
+# Demonstrates how another repo (or this repo) calls the reusable
+# workflow. This is the GitHub equivalent of "shared pipelines".
+name: Call Reusable CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  reusable-ci:
+    # In a real multi-repo setup you'd reference another repo:
+    #   uses: my-org/shared-workflows/.github/workflows/reusable-rust-ci.yml@main
+    uses: ./.github/workflows/reusable-rust-ci.yml
+    with:
+      rust_version: "stable"
+      run_clippy: true
+      run_fmt: true
+    secrets: inherit
+
+  post-ci:
+    name: Post-CI summary
+    needs: [reusable-ci]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report
+        env:
+          TEST_RESULT: ${{ needs.reusable-ci.outputs.test_result }}
+        run: echo "Reusable CI test result: $TEST_RESULT"

@@ -1,0 +1,70 @@
+# ─── Manual deploy with environments ────────────────────────────
+# Demonstrates workflow_dispatch inputs, GitHub Environments with
+# approval gates, and deployment protection rules — none of which
+# exist in Bitbucket Pipelines.
+name: Manual Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: environment
+      confirm:
+        description: "Type 'deploy' to confirm"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run only?"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  preflight:
+    name: Preflight checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation
+        env:
+          CONFIRM_INPUT: ${{ inputs.confirm }}
+        run: |
+          if [[ "$CONFIRM_INPUT" != "deploy" ]]; then
+            echo "::error::You must type 'deploy' to confirm"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests before deploy
+        run: cargo test --verbose
+
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    # GitHub Environments — configure approval gates and secrets
+    # per environment in repo settings. Bitbucket has "deployment
+    # environments" but they lack approval workflows.
+    environment:
+      name: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Deploy
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          TARGET_ENV: ${{ inputs.environment }}
+        run: |
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "DRY RUN — would deploy to $TARGET_ENV"
+          else
+            echo "Deploying to $TARGET_ENV..."
+            echo "Deploy complete."
+          fi

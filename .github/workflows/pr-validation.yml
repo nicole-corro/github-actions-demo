@@ -1,0 +1,90 @@
+# ─── PR validation ──────────────────────────────────────────────
+# Runs on every PR and produces the "PR Gate" status check.
+# Configure branch protection to require this check — PRs cannot
+# merge unless this workflow succeeds. Running, cancelled, and
+# timed-out states do NOT count as success.
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Skip entirely for draft PRs — another feature Bitbucket lacks
+concurrency:
+  group: pr-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Skip draft PRs early
+  check-draft:
+    name: Check draft status
+    runs-on: ubuntu-latest
+    outputs:
+      is_draft: ${{ steps.draft.outputs.is_draft }}
+    steps:
+      - id: draft
+        env:
+          IS_DRAFT: ${{ github.event.pull_request.draft }}
+        run: echo "is_draft=$IS_DRAFT" >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: Validate PR
+    needs: [check-draft]
+    if: needs.check-draft.outputs.is_draft != 'true'
+    runs-on: ubuntu-latest
+    # Timeout — kill the job if it hangs. Bitbucket has a global
+    # 120-min limit; GitHub lets you set per-job timeouts.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: pr-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: pr-${{ runner.os }}-
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --verbose
+
+      - name: Build
+        run: cargo build --release
+
+  # Single required status check for branch protection
+  pr-gate:
+    name: PR Gate
+    if: always()
+    needs: [check-draft, validate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate
+        env:
+          IS_DRAFT: ${{ needs.check-draft.outputs.is_draft }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+        run: |
+          # Drafts are allowed to skip
+          if [[ "$IS_DRAFT" == "true" ]]; then
+            echo "Draft PR — skipping gate"
+            exit 0
+          fi
+
+          if [[ "$VALIDATE_RESULT" != "success" ]]; then
+            echo "::error::PR validation failed"
+            exit 1
+          fi
+
+          echo "All checks passed"

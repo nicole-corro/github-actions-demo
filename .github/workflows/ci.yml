@@ -1,0 +1,295 @@
+# Main CI pipeline — showcases advanced GitHub Actions features
+# that go beyond what Bitbucket Pipelines offers.
+name: CI
+
+# ─── Advanced trigger configuration ────────────────────────────
+# GitHub Actions lets you filter on branches, paths, and types
+# in ways Bitbucket cannot.
+on:
+  push:
+    branches: [main]
+    # Only run when Rust source or config changes — saves minutes
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci.yml"
+
+  pull_request:
+    branches: [main]
+    # Fine-grained PR event types (Bitbucket has no equivalent)
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+  # Scheduled runs — cron syntax, no Bitbucket equivalent
+  schedule:
+    - cron: "0 6 * * 1" # every Monday at 06:00 UTC
+
+  # Manual trigger with user-supplied inputs
+  workflow_dispatch:
+    inputs:
+      run_benchmarks:
+        description: "Run benchmarks?"
+        required: false
+        type: boolean
+        default: false
+      log_level:
+        description: "Log verbosity"
+        required: false
+        type: choice
+        options:
+          - info
+          - debug
+          - trace
+        default: info
+
+# ─── Concurrency control ───────────────────────────────────────
+# Cancel in-flight runs for the same branch/PR. Bitbucket has no
+# built-in equivalent — you'd need a custom script.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# ─── Shared environment variables ──────────────────────────────
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+# ─── Permissions ───────────────────────────────────────────────
+# Principle of least privilege — Bitbucket has no token scoping.
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  # ── Job 1: Format check ───────────────────────────────────
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - run: cargo fmt --all -- --check
+
+  # ── Job 2: Lint ────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Dependency caching — GitHub has first-class cache support
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: clippy-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: clippy-${{ runner.os }}-
+
+      - run: cargo clippy --all-targets -- -D warnings
+
+  # ── Job 3: Tests ───────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.os }})
+    # Matrix builds — run the same job across multiple OSes and
+    # Rust versions simultaneously. Bitbucket has no matrix support.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable]
+        include:
+          # Extra combo: also test on nightly Linux
+          - os: ubuntu-latest
+            rust: nightly
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: >-
+            test-${{ runner.os }}-${{ matrix.rust }}-
+            ${{ hashFiles('Cargo.lock') }}
+          restore-keys: test-${{ runner.os }}-${{ matrix.rust }}-
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Build release binary
+        run: cargo build --release
+
+      # Upload artifacts — each OS produces its own binary
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        if: matrix.rust == 'stable'
+        with:
+          name: binary-${{ matrix.os }}
+          path: target/release/github-actions-demo*
+          retention-days: 7
+
+  # ── Job 4: License check ────────────────────────────────────
+  # Equivalent to `cargo deny` in Bitbucket pipelines, but runs
+  # as its own parallel job instead of being bundled with tests.
+  licenses:
+    name: License check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Check licenses
+        run: cargo deny check licenses
+
+      - name: Check advisories
+        run: cargo deny check advisories
+        continue-on-error: true
+
+  # ── Job 5: Security audit ──────────────────────────────────
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Job 6: Coverage with threshold ─────────────────────────
+  # Enforces a minimum coverage percentage — fails the pipeline
+  # if coverage drops below 70%, matching the Bitbucket configs.
+  coverage:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage
+        run: cargo llvm-cov --lcov --output-path lcov.info
+
+      - name: Check coverage threshold (70%)
+        run: |
+          COVERAGE=$(cargo llvm-cov --summary-only 2>&1 \
+            | grep -oP 'TOTAL\s+\S+\s+\S+\s+\K[\d.]+' || echo "0")
+          echo "Coverage: ${COVERAGE}%"
+          if (( $(echo "$COVERAGE < 70" | bc -l) )); then
+            echo "::error::Coverage ${COVERAGE}% is below 70% threshold"
+            exit 1
+          fi
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: lcov.info
+
+  # ── Job 7: Feature-flag matrix ─────────────────────────────
+  # Replaces hardcoded feature combos in Bitbucket pipelines.
+  # GitHub matrix makes this dynamic.
+  feature-tests:
+    name: Features (${{ matrix.features }})
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - ""              # default features
+          - --all-features  # everything enabled
+          # Add repo-specific combos here, e.g.:
+          # - --no-default-features -F ring,dane
+          # - --no-default-features -F spiffe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: >-
+            features-${{ runner.os }}-
+            ${{ hashFiles('Cargo.lock') }}-
+            ${{ matrix.features }}
+
+      - name: Test with feature flags
+        env:
+          FEATURE_FLAGS: ${{ matrix.features }}
+        run: cargo test --verbose $FEATURE_FLAGS
+
+  # ── Job 8: Gate ────────────────────────────────────────────
+  # Single status check that branch protection can require.
+  # This means you only configure ONE required check instead of
+  # updating protection rules every time you add/rename a job.
+  ci-gate:
+    name: CI Gate
+    if: always()
+    needs: [fmt, clippy, test, licenses, audit, coverage, feature-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate results
+        env:
+          FMT_RESULT: ${{ needs.fmt.result }}
+          CLIPPY_RESULT: ${{ needs.clippy.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          LICENSES_RESULT: ${{ needs.licenses.result }}
+          AUDIT_RESULT: ${{ needs.audit.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+          FEATURES_RESULT: ${{ needs.feature-tests.result }}
+        run: |
+          echo "fmt:           $FMT_RESULT"
+          echo "clippy:        $CLIPPY_RESULT"
+          echo "test:          $TEST_RESULT"
+          echo "licenses:      $LICENSES_RESULT"
+          echo "audit:         $AUDIT_RESULT"
+          echo "coverage:      $COVERAGE_RESULT"
+          echo "feature-tests: $FEATURES_RESULT"
+
+          # Fail if any required job did not succeed.
+          # 'audit' is allowed to fail (continue-on-error).
+          if [[ \
+            "$FMT_RESULT" != "success" || \
+            "$CLIPPY_RESULT" != "success" || \
+            "$TEST_RESULT" != "success" || \
+            "$LICENSES_RESULT" != "success" || \
+            "$COVERAGE_RESULT" != "success" || \
+            "$FEATURES_RESULT" != "success" \
+          ]]; then
+            echo "::error::Required jobs did not all succeed"
+            exit 1
+          fi

@@ -1,0 +1,101 @@
+# ─── Reusable workflow ──────────────────────────────────────────
+# Any repo can call this workflow with `uses:`. Bitbucket has no
+# equivalent — you cannot share pipeline definitions across repos.
+#
+# Usage from another repo:
+#
+#   jobs:
+#     ci:
+#       uses: <owner>/github-actions-demo/.github/workflows/reusable-rust-ci.yml@main
+#       with:
+#         rust_version: "stable"
+#         run_clippy: true
+#       secrets: inherit   # or pass individually
+#
+name: Reusable Rust CI
+
+on:
+  workflow_call:
+    inputs:
+      rust_version:
+        description: "Rust toolchain to use"
+        required: false
+        type: string
+        default: "stable"
+      run_clippy:
+        description: "Run clippy lint pass"
+        required: false
+        type: boolean
+        default: true
+      run_fmt:
+        description: "Run rustfmt check"
+        required: false
+        type: boolean
+        default: true
+      extra_cargo_test_args:
+        description: "Extra arguments passed to cargo test"
+        required: false
+        type: string
+        default: ""
+    outputs:
+      test_result:
+        description: "Result of the test job"
+        value: ${{ jobs.test.result }}
+
+jobs:
+  fmt:
+    name: Rustfmt
+    if: inputs.run_fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust_version }}
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    if: inputs.run_clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust_version }}
+          components: clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: >-
+            reusable-clippy-${{ runner.os }}-
+            ${{ inputs.rust_version }}-
+            ${{ hashFiles('Cargo.lock') }}
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust_version }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: >-
+            reusable-test-${{ runner.os }}-
+            ${{ inputs.rust_version }}-
+            ${{ hashFiles('Cargo.lock') }}
+      - name: Run tests
+        env:
+          EXTRA_ARGS: ${{ inputs.extra_cargo_test_args }}
+        run: cargo test --verbose $EXTRA_ARGS

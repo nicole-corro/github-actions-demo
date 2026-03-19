@@ -1,0 +1,115 @@
+# ─── Integration tests with service containers ─────────────────
+# Replaces LocalStack steps in Bitbucket API pipelines.
+# GitHub Actions can spin up sidecar containers (services) natively
+# — Bitbucket requires `services:` definitions that are more limited
+# and can't expose custom health checks.
+name: Integration Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # LocalStack configuration
+  AWS_ENDPOINT_URL: http://localhost:4566
+  AWS_DEFAULT_REGION: ap-southeast-2
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+
+jobs:
+  localstack:
+    name: S3 integration tests
+    runs-on: ubuntu-latest
+    # ─── Service containers ──────────────────────────────────
+    # GitHub spins these up before your steps run and tears them
+    # down after. Bitbucket has `services:` but with no health
+    # check support — you have to sleep/poll manually.
+    services:
+      localstack:
+        image: localstack/localstack:latest
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: s3,sqs,dynamodb
+          DEFAULT_REGION: ap-southeast-2
+        options: >-
+          --health-cmd "curl -f http://localhost:4566/_localstack/health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: >-
+            integration-${{ runner.os }}-
+            ${{ hashFiles('Cargo.lock') }}
+
+      - name: Wait for LocalStack
+        run: |
+          for i in {1..30}; do
+            if curl -sf http://localhost:4566/_localstack/health; then
+              echo "LocalStack is ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Create test resources
+        run: |
+          aws --endpoint-url http://localhost:4566 \
+            s3 mb s3://test-bucket
+          echo "Test bucket created"
+
+      - name: Run integration tests
+        run: cargo test --verbose
+
+  # Example: database integration tests with Postgres
+  postgres:
+    name: Database integration tests
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgres:16
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run database tests
+        env:
+          DATABASE_URL: postgres://test:test@localhost:5432/testdb
+        run: cargo test --verbose
