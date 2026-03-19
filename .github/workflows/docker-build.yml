@@ -5,18 +5,21 @@
 name: Docker Build
 
 on:
-  push:
-    branches: [main]
-    # Only build when Dockerfile or related files change
-    paths:
-      - "Dockerfile"
-      - "docker/**"
-      - ".github/workflows/docker-build.yml"
-  pull_request:
-    branches: [main]
-    paths:
-      - "Dockerfile"
-      - "docker/**"
+  # In a real repo with Dockerfiles, you'd use push/pull_request
+  # triggers with path filters. This demo has no Dockerfiles, so
+  # we only allow manual runs to avoid false failures.
+  workflow_dispatch:
+  # Uncomment when docker/ directory exists:
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - "Dockerfile"
+  #     - "docker/**"
+  # pull_request:
+  #   branches: [main]
+  #   paths:
+  #     - "Dockerfile"
+  #     - "docker/**"
 
 # ─── Permissions for OIDC + GHCR ──────────────────────────────
 permissions:
