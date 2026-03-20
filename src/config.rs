@@ -15,23 +15,35 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    /// Load configuration from environment variables.
+    /// Load configuration from real environment variables.
     ///
     /// # Errors
     ///
     /// Returns an error if required variables are missing or
     /// invalid.
     pub fn from_env() -> anyhow::Result<Self> {
-        let table_name = env::var("TABLE_NAME").context("TABLE_NAME is required")?;
+        Self::from_lookup(|key| env::var(key).ok())
+    }
 
-        let aws_region = env::var("AWS_REGION")
-            .or_else(|_| env::var("AWS_DEFAULT_REGION"))
-            .unwrap_or_else(|_| "ap-southeast-2".to_owned());
+    /// Load configuration using a custom lookup function.
+    ///
+    /// This allows testing without mutating process environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if required variables are missing or
+    /// invalid.
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
+        let table_name = get("TABLE_NAME").context("TABLE_NAME is required")?;
 
-        let log_level = env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_owned());
+        let aws_region = get("AWS_REGION")
+            .or_else(|| get("AWS_DEFAULT_REGION"))
+            .unwrap_or_else(|| "ap-southeast-2".to_owned());
 
-        let max_page_size = env::var("MAX_PAGE_SIZE")
-            .unwrap_or_else(|_| "50".to_owned())
+        let log_level = get("LOG_LEVEL").unwrap_or_else(|| "info".to_owned());
+
+        let max_page_size = get("MAX_PAGE_SIZE")
+            .unwrap_or_else(|| "50".to_owned())
             .parse::<usize>()
             .context("MAX_PAGE_SIZE must be a number")?;
 
@@ -69,83 +81,75 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::env;
+    use std::collections::HashMap;
 
-    // SAFETY: These tests mutate environment variables which is
-    // unsafe in multi-threaded contexts. Each test clears its own
-    // state. Run with `cargo test -- --test-threads=1` or use
-    // serial_test for isolation.
-    fn set_required_env() {
-        unsafe { env::set_var("TABLE_NAME", "test-items") };
+    use super::*;
+
+    fn env_with(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        move |key| map.get(key).cloned()
     }
 
-    fn clear_env() {
-        unsafe {
-            env::remove_var("TABLE_NAME");
-            env::remove_var("AWS_REGION");
-            env::remove_var("AWS_DEFAULT_REGION");
-            env::remove_var("LOG_LEVEL");
-            env::remove_var("MAX_PAGE_SIZE");
-        }
+    fn required_env() -> impl Fn(&str) -> Option<String> {
+        env_with(&[("TABLE_NAME", "test-items")])
     }
 
     #[test]
     fn loads_with_required_vars() {
-        clear_env();
-        set_required_env();
-        let config = AppConfig::from_env().unwrap();
+        let config = AppConfig::from_lookup(required_env()).unwrap();
         assert_eq!(config.table_name(), "test-items");
         assert_eq!(config.aws_region(), "ap-southeast-2");
         assert_eq!(config.log_level(), "info");
         assert_eq!(config.max_page_size(), 50);
-        clear_env();
     }
 
     #[test]
     fn fails_without_table_name() {
-        clear_env();
-        let result = AppConfig::from_env();
+        let result = AppConfig::from_lookup(env_with(&[]));
         assert!(result.is_err());
     }
 
     #[test]
     fn respects_custom_region() {
-        clear_env();
-        set_required_env();
-        unsafe { env::set_var("AWS_REGION", "us-east-1") };
-        let config = AppConfig::from_env().unwrap();
+        let config = AppConfig::from_lookup(env_with(&[
+            ("TABLE_NAME", "t"),
+            ("AWS_REGION", "us-east-1"),
+        ]))
+        .unwrap();
         assert_eq!(config.aws_region(), "us-east-1");
-        clear_env();
+    }
+
+    #[test]
+    fn falls_back_to_default_region() {
+        let config = AppConfig::from_lookup(env_with(&[
+            ("TABLE_NAME", "t"),
+            ("AWS_DEFAULT_REGION", "eu-west-1"),
+        ]))
+        .unwrap();
+        assert_eq!(config.aws_region(), "eu-west-1");
     }
 
     #[test]
     fn rejects_zero_page_size() {
-        clear_env();
-        set_required_env();
-        unsafe { env::set_var("MAX_PAGE_SIZE", "0") };
-        let result = AppConfig::from_env();
+        let result =
+            AppConfig::from_lookup(env_with(&[("TABLE_NAME", "t"), ("MAX_PAGE_SIZE", "0")]));
         assert!(result.is_err());
-        clear_env();
     }
 
     #[test]
     fn rejects_page_size_over_100() {
-        clear_env();
-        set_required_env();
-        unsafe { env::set_var("MAX_PAGE_SIZE", "200") };
-        let result = AppConfig::from_env();
+        let result =
+            AppConfig::from_lookup(env_with(&[("TABLE_NAME", "t"), ("MAX_PAGE_SIZE", "200")]));
         assert!(result.is_err());
-        clear_env();
     }
 
     #[test]
     fn rejects_non_numeric_page_size() {
-        clear_env();
-        set_required_env();
-        unsafe { env::set_var("MAX_PAGE_SIZE", "abc") };
-        let result = AppConfig::from_env();
+        let result =
+            AppConfig::from_lookup(env_with(&[("TABLE_NAME", "t"), ("MAX_PAGE_SIZE", "abc")]));
         assert!(result.is_err());
-        clear_env();
     }
 }
