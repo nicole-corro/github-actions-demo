@@ -1,0 +1,59 @@
+# ─── Manual approval gate ───────────────────────────────────────
+# Demonstrates a pipeline that pauses and waits for human approval
+# before completing. If nobody approves, the check stays pending
+# and the PR cannot merge.
+#
+# This is the GitHub equivalent of Bitbucket's "manual" step, but
+# more powerful — you can configure who can approve, add timeouts,
+# and scope secrets per environment.
+#
+# Setup required:
+#   Settings → Environments → New environment → "demo-approval"
+#   → Add required reviewer (yourself)
+#   → Save
+name: Manual Approval Gate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - "src/slow_tests.rs"
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: cargo test --verbose
+
+  # ─── Manual approval ───────────────────────────────────────
+  # This job pauses and waits for a reviewer to approve in the
+  # GitHub UI. Until approved, the workflow stays "waiting" and
+  # the PR merge is blocked.
+  #
+  # Bitbucket's manual steps work similarly, but GitHub adds:
+  # - Configurable list of required reviewers per environment
+  # - Environment-scoped secrets (only available after approval)
+  # - Wait timer (auto-reject after N minutes)
+  # - Deployment tracking and history
+  approval:
+    name: Waiting for approval
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: demo-approval
+    steps:
+      - name: Approved
+        run: echo "Manual approval received — proceeding"
+
+  post-approval:
+    name: Post-approval steps
+    needs: [approval]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy or continue
+        run: echo "This step only runs after manual approval"
