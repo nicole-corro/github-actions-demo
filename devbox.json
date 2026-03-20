@@ -6,7 +6,8 @@
     "cargo-llvm-cov@latest",
     "cargo-nextest@latest",
     "actionlint@latest",
-    "act@latest"
+    "act@latest",
+    "github-cli@latest"
   ],
   "shell": {
     "init_hook": [
@@ -15,11 +16,11 @@
       "rustup component add llvm-tools-preview clippy rustfmt"
     ],
     "scripts": {
-      "test": ["cargo test"],
-      "lint": ["cargo clippy --all-targets -- -D warnings"],
-      "fmt": ["cargo fmt --all -- --check"],
-      "deny": ["cargo deny check licenses"],
-      "coverage": ["cargo llvm-cov --lcov --output-path lcov.info"],
+      "test":               ["cargo test"],
+      "lint":               ["cargo clippy --all-targets -- -D warnings"],
+      "fmt":                ["cargo fmt --all -- --check"],
+      "deny":               ["cargo deny check licenses"],
+      "coverage":           ["cargo llvm-cov --lcov --output-path lcov.info"],
       "validate-workflows": ["actionlint"],
       "check-all": [
         "cargo fmt --all -- --check",
@@ -29,7 +30,9 @@
       ],
       "act-ci": ["act push -W .github/workflows/ci.yml --job fmt --job clippy"],
       "act-pr": ["act pull_request -W .github/workflows/pr-validation.yml"],
-      "act-list": ["for f in .github/workflows/*.yml; do echo \"--- $f ---\"; act -l -W \"$f\" 2>/dev/null || echo '  (skipped — uses reusable workflows, not supported by act)'; done"]
+      "act-list": [
+        "for f in .github/workflows/*.yml; do echo \"--- $f ---\"; act -l -W \"$f\" 2>/dev/null || echo '  (skipped — uses reusable workflows, not supported by act)'; done"
+      ]
     }
   }
 }
